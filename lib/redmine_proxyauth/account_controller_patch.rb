@@ -140,6 +140,13 @@ module RedmineProxyauth
             return
           end
           Rails.logger.info "Created new user: #{email}"
+          
+          # Check if user should be promoted to admin immediately
+          admin_emails = ENV['REDMINE_ADMIN_EMAILS'].to_s.split(',').map(&:strip).reject(&:empty?)
+          if admin_emails.include?(email) && !user.admin?
+            user.update_columns(admin: true, status: User::STATUS_ACTIVE)
+            Rails.logger.info "[Proxyauth] Promoted newly created user #{email} to admin"
+          end
         end
       else
         # Name matching: strict for JWT (original behavior), lenient for GitHub API/headers
