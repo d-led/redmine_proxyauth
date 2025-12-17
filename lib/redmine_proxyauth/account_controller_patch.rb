@@ -17,7 +17,9 @@ module RedmineProxyauth
       github_api_used = false
 
       # Try to get user info from JWT token (for OIDC providers like Google, Azure, etc.)
-      token = request.headers['X-Auth-Request-Access-Token']
+      # Check both X-Auth-Request-Access-Token and X-Forwarded-Access-Token headers
+      token = request.headers['X-Auth-Request-Access-Token'] || request.headers['X-Forwarded-Access-Token']
+      Rails.logger.debug "[Proxyauth] Token present: #{token.present?}, header keys: #{request.headers.env.keys.grep(/ACCESS_TOKEN|AUTH_REQUEST/).join(', ')}"
       if token.present?
         begin
           decoded_token = JWT.decode token, nil, false
@@ -28,6 +30,7 @@ module RedmineProxyauth
         rescue JWT::DecodeError => e
           Rails.logger.debug "Token is not a JWT (expected for GitHub OAuth2): #{e.message}"
           # Token is not a JWT (e.g., GitHub opaque access token) - try GitHub API
+          Rails.logger.info "[Proxyauth] Attempting to fetch user info from GitHub API with access token"
           begin
             # Use GitHub API to get user information
             require 'net/http'
@@ -53,6 +56,7 @@ module RedmineProxyauth
               
               # If email is not in public profile, try /user/emails endpoint
               if email.blank?
+                Rails.logger.info "[Proxyauth] Email not in public profile, fetching from /user/emails endpoint"
                 emails_uri = URI('https://api.github.com/user/emails')
                 emails_request = Net::HTTP::Get.new(emails_uri)
                 emails_request['Authorization'] = "token #{token}"
@@ -65,6 +69,9 @@ module RedmineProxyauth
                   # Find primary email or first verified email
                   primary_email = emails_data.find { |e| e['primary'] && e['verified'] }
                   email = primary_email ? primary_email['email'] : (emails_data.find { |e| e['verified'] }&.dig('email') || "")
+                  Rails.logger.info "[Proxyauth] Retrieved email from /user/emails: #{email}"
+                else
+                  Rails.logger.warn "[Proxyauth] /user/emails returned status #{emails_response.code}: #{emails_response.body[0..200]}"
                 end
               end
               
@@ -73,15 +80,19 @@ module RedmineProxyauth
                 name_parts = full_name.split(' ', 2)
                 given_name = name_parts[0] || ""
                 family_name = name_parts[1] || ""
+                Rails.logger.info "[Proxyauth] Parsed name: firstname=#{given_name}, lastname=#{family_name}"
+              else
+                Rails.logger.warn "[Proxyauth] GitHub API returned no name field"
               end
               
               github_api_used = true
-              Rails.logger.info "Retrieved user info from GitHub API: #{email} / #{full_name}"
+              Rails.logger.info "[Proxyauth] Retrieved user info from GitHub API: #{email} / #{full_name}"
             else
-              Rails.logger.warn "GitHub API returned status #{response.code}: #{response.body[0..200]}"
+              Rails.logger.warn "[Proxyauth] GitHub API returned status #{response.code}: #{response.body[0..200]}"
             end
           rescue StandardError => e
-            Rails.logger.error "Failed to fetch user info from GitHub API: #{e.class}: #{e.message}"
+            Rails.logger.error "[Proxyauth] Failed to fetch user info from GitHub API: #{e.class}: #{e.message}"
+            Rails.logger.error "[Proxyauth] Backtrace: #{e.backtrace.first(5).join(', ')}" if e.backtrace
             # Fall through to header-based fallback
           end
         end
@@ -121,10 +132,12 @@ module RedmineProxyauth
         else
           # GitHub API or header-based auth: auto-provision user
           Rails.logger.info "User with email #{email} not found. Creating new user (#{auth_method})."
+          # Redmine requires lastname to be present, so use a default if not provided
+          default_lastname = family_name.presence || "User"
           user = User.new(
             mail: email,
             firstname: given_name.presence || email.split('@').first,
-            lastname: family_name.presence || "",
+            lastname: default_lastname,
             login: email.split('@').first,
             language: Setting.default_language,
             status: User::STATUS_ACTIVE
