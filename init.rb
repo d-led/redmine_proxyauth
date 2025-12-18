@@ -18,3 +18,7 @@ Redmine::Plugin.register :redmine_oauth2_proxy_auth do
   # No settings page needed - configuration is done via environment variables
   # Original redmine_proxyauth had OIDC settings, but we use oauth2-proxy which handles OAuth2/OIDC
 end
+
+# Rails automatically loads initializers from plugins/PLUGIN_NAME/config/initializers/
+# The initializers will be loaded by Rails' initializer system automatically
+# No explicit loading needed - Rails handles this for plugin directories
