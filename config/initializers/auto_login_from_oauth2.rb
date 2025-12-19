@@ -59,21 +59,32 @@ elsif defined?(Rails) && Rails.application
         # Find user from OAuth2 email
         user = User.find_by_mail(email)
         
-        # If OAuth2 headers are present, we MUST sync with them (source of truth)
-        # This prevents redirect loops from stale sessions
-        if user&.active?
-          # If there's a logged-in user but it's NOT the OAuth2 user, clear the stale session
-          if User.current&.logged? && User.current.id != user.id
-            Rails.logger.warn "[Proxyauth] auto_login_from_oauth2: Stale session detected! Current user: #{User.current.login} (#{User.current.mail}), OAuth2 user: #{user.login} (#{email}). Clearing stale session."
-            # Clear the stale session
+        # CRITICAL: If OAuth2 headers are present, they are the source of truth
+        # We MUST clear any stale session if the current user doesn't match OAuth2
+        # This must happen BEFORE checking if user exists, to prevent redirect loops
+        if User.current&.logged?
+          if user.nil?
+            # OAuth2 says this email, but user doesn't exist in Redmine
+            # Clear the stale session - we'll let redmine_proxyauth create the user on /login
+            Rails.logger.warn "[Proxyauth] auto_login_from_oauth2: Stale session detected! Current user: #{User.current.login} (#{User.current.mail}), but OAuth2 user #{email} doesn't exist. Clearing stale session."
             reset_session
             User.current = nil
-          end
-          
-          # If user is already logged in and matches OAuth2, we're good
-          if User.current&.logged? && User.current.id == user.id
-            Rails.logger.debug "[Proxyauth] auto_login_from_oauth2: User already logged in and matches OAuth2 (#{User.current.login})"
-            return
+          elsif User.current.id != user.id
+            # OAuth2 says different user - clear the stale session
+            Rails.logger.warn "[Proxyauth] auto_login_from_oauth2: Stale session detected! Current user: #{User.current.login} (#{User.current.mail}), OAuth2 user: #{user.login} (#{email}). Clearing stale session."
+            reset_session
+            User.current = nil
+          elsif User.current.id == user.id
+            # User matches OAuth2 - we're good, but verify they're still active
+            if user&.active?
+              Rails.logger.debug "[Proxyauth] auto_login_from_oauth2: User already logged in and matches OAuth2 (#{User.current.login})"
+              return
+            else
+              # User exists but is inactive - clear session
+              Rails.logger.warn "[Proxyauth] auto_login_from_oauth2: User #{email} is inactive. Clearing session."
+              reset_session
+              User.current = nil
+            end
           end
         end
         
@@ -135,9 +146,14 @@ elsif defined?(Rails) && Rails.application
         
         # CRITICAL: Ensure session is marked as changed so it gets persisted
         # The session middleware will handle writing it to the response
-        # We just need to ensure it's marked as dirty
+        # We need to ensure it's loaded and marked as dirty
         if session.respond_to?(:loaded?) && !session.loaded?
           session.load!
+        end
+        # Explicitly mark session as changed to ensure it's persisted
+        if session.respond_to?(:[]=)
+          # Touch the session to mark it as changed
+          session[:user_id] = user.id unless session[:user_id] == user.id
         end
 
         # Verify the login worked
