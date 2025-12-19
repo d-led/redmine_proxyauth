@@ -26,18 +26,26 @@ if __FILE__.include?('plugins/') && __FILE__.include?('config/initializers')
 elsif defined?(Rails) && Rails.application
   # Execute immediately when initializer is loaded, not in to_prepare
   # This ensures it runs in production and before requests are handled
-  Rails.logger.info "[Proxyauth] Loading auto_login_from_oauth2 initializer" if defined?(Rails.logger)
+  Rails.logger.info "[Proxyauth] Loading auto_login_from_oauth2 initializer from #{__FILE__}" if defined?(Rails.logger)
+  
+  # Use to_prepare to ensure it runs after all classes are loaded
   Rails.application.config.to_prepare do
     Rails.logger.info "[Proxyauth] to_prepare block executing for auto_login_from_oauth2" if defined?(Rails.logger)
     next unless defined?(ApplicationController) && defined?(User)
 
     Rails.logger.info "[Proxyauth] Patching ApplicationController with auto_login_from_oauth2" if defined?(Rails.logger)
-    ApplicationController.class_eval do
-      before_action :auto_login_from_oauth2, prepend: true
+    
+    # Only patch if not already patched
+    unless ApplicationController.instance_methods(false).include?(:auto_login_from_oauth2) || ApplicationController.instance_methods.include?(:auto_login_from_oauth2)
+      ApplicationController.class_eval do
+        before_action :auto_login_from_oauth2, prepend: true
 
       private
 
       def auto_login_from_oauth2
+        # Log that we're running (at least once per request to verify it's being called)
+        Rails.logger.debug "[Proxyauth] auto_login_from_oauth2: Running on #{request.fullpath}, User.current: #{User.current&.id || 'nil'}, session[:user_id]: #{session[:user_id] || 'nil'}" if defined?(Rails.logger)
+        
         # Take the email from the trusted proxy headers first
         email = request.headers['X-Auth-Request-Email'] ||
                 request.headers['X-Forwarded-Email']

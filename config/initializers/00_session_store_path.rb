@@ -30,4 +30,3 @@ else
   # Log that we've set the session path
   Rails.logger.info "[Session Config] Session cookie path set to '/' to prevent redirect loops" if defined?(Rails.logger)
 end
-
